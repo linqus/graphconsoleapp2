@@ -59,6 +59,49 @@ namespace graphconsoleapp
             var httpClient = new HttpClient(new AuthHandler(authenticationProvider, new HttpClientHandler()));
             return httpClient;
         }
+
+        private static Message? GetMessageDetail(HttpClient client, string messageId, int defaultDelay = 2)
+        {
+        Message? messageDetail = null;
+
+        string endpoint = "https://graph.microsoft.com/v1.0/me/messages/" + messageId;
+        // submit request to Microsoft Graph & wait to process response
+        var clientResponse = client.GetAsync(endpoint).Result;
+        var httpResponseTask = clientResponse.Content.ReadAsStringAsync();
+        httpResponseTask.Wait();
+        Console.WriteLine("...Response status code: {0}  ", clientResponse.StatusCode);
+
+        // IF request successful (not throttled), set message to retrieved message
+        if (clientResponse.StatusCode == HttpStatusCode.OK)
+        {
+            messageDetail = JsonSerializer.Deserialize<Message>(httpResponseTask.Result);
+        }
+        // ELSE IF request was throttled (429, aka: TooManyRequests)...
+        else if (clientResponse.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            // get retry-after if provided; if not provided default to 2s
+            var retryAfterDelay = defaultDelay;
+            var retryAfter = clientResponse.Headers.RetryAfter;
+            if (retryAfter != null && retryAfter.Delta.HasValue && (retryAfter.Delta.Value.Seconds > 0))
+            {
+                retryAfterDelay = retryAfter.Delta.Value.Seconds;
+            }
+
+            // wait for specified time as instructed by Microsoft Graph's Retry-After header,
+            //    or fall back to default
+            Console.WriteLine(">>>>>>>>>>>>> sleeping for {0} seconds...", retryAfterDelay);
+            System.Threading.Thread.Sleep(retryAfterDelay * 1000);
+
+            // call method again after waiting
+            messageDetail = GetMessageDetail(client, messageId);
+        }
+
+        // add code here
+
+        return messageDetail;
+        }
+
+
         public static void Main(string[] args)
         {
             var config = LoadAppSettings();
@@ -74,47 +117,44 @@ namespace graphconsoleapp
             var displayName = profileObject.RootElement.GetProperty("displayName").GetString();
             Console.WriteLine("Hello " + displayName);
 
-            var totalRequests = 100;
-            var successRequests = 0;
+            var stopwatch = new System.Diagnostics.Stopwatch();
+            stopwatch.Start();
+
+            var clientResponse = client.GetAsync("https://graph.microsoft.com/v1.0/me/messages?$select=id&$top=100").Result;
+            // enumerate through the list of messages
+            var httpResponseTask = clientResponse.Content.ReadAsStringAsync();
+            httpResponseTask.Wait();
+            var graphMessages = JsonSerializer.Deserialize<Messages>(httpResponseTask.Result);
+            var items = graphMessages == null ? Array.Empty<Message>() : graphMessages.Items;
+
             var tasks = new List<Task>();
-            var failResponseCode = HttpStatusCode.OK;
-            HttpResponseHeaders failedHeaders = null!;
+            foreach (var graphMessage in items)
+            {
+                tasks.Add(Task.Run(() =>
+                {
 
-            for (int i = 0; i < totalRequests; i++)
-            {
-            tasks.Add(Task.Run(() =>
-            {
-                var response = client.GetAsync("https://graph.microsoft.com/v1.0/me/messages").Result;
-                Console.Write(".");
-                if (response.StatusCode == HttpStatusCode.OK)
-                {
-                successRequests++;
-                }
-                else
-                {
-                Console.Write('X');
-                failResponseCode = response.StatusCode;
-                failedHeaders = response.Headers;
-                }
-            }));
+                    Console.WriteLine("...retrieving message: {0}", graphMessage.Id);
+
+                    var messageDetail = GetMessageDetail(client, graphMessage.Id);
+
+                    if (messageDetail != null)
+                    {
+                        Console.WriteLine("SUBJECT: {0}", messageDetail.Subject);
+                    }
+
+                }));
             }
-
+            // do all work in parallel & wait for it to complete
             var allWork = Task.WhenAll(tasks);
             try
             {
-            allWork.Wait();
+                allWork.Wait();
             }
-            catch { }
+            catch {}
+
+            stopwatch.Stop();
             Console.WriteLine();
-            Console.WriteLine("{0}/{1} requests succeeded.", successRequests, totalRequests);
-            if (successRequests != totalRequests)
-            {
-            Console.WriteLine("Failed response code: {0}", failResponseCode.ToString());
-            Console.WriteLine("Failed response headers: {0}", failedHeaders);
-            }
-
-
-
+            Console.WriteLine("Elapsed time: {0} seconds", stopwatch.Elapsed.Seconds);
         }
     }
 }
