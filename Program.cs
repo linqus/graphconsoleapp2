@@ -28,7 +28,7 @@ namespace graphconsoleapp
                 if (string.IsNullOrEmpty(config["applicationId"]) ||
                     string.IsNullOrEmpty(config["tenantId"]))
                 {
-                return null;
+                    return null;
                 }
 
                 return config;
